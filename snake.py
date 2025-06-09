@@ -16,6 +16,12 @@ Wishlist:
 import pygame
 import sys
 import random
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from collections import deque
+import time
 
 # Initialize Pygame
 pygame.init()
@@ -56,6 +62,8 @@ class Snake:
 
     Methods
     -------
+    reset():
+        Reset the Snake's attributes for training
     move():
         Move the Snake in its current direction
     grow():
@@ -72,11 +80,16 @@ class Snake:
     def __init__(self):
         '''
         Constructor to initialize the Snake attributes
+        
+        The reset function is used for training purposes
         '''
-        self.body = [(5, 5)]
-        self.direction = (0, 0)
+        self.reset()
+    
+    def reset(self):
+        self.body = [(4 - i, 4) for i in range(3)]
+        self.direction = (1, 0)
         self.grow_pending = False
-
+    
     def move(self):
         '''
         Move the Snake in its current direction
@@ -197,6 +210,96 @@ class Food:
         rect = pygame.Rect(self.position[0] * GRID_SIZE, self.position[1] * GRID_SIZE, GRID_SIZE, GRID_SIZE)
         pygame.draw.rect(surface, RED, rect)
 
+class Brain:
+    '''
+    Class to represent the Snake agent's brain
+    
+    Attributes
+    ----------
+    snake: Snake
+        Snake object for the agent to control
+    food: Food
+        Food object for the Snake to find
+    
+    Methods
+    -------
+    reset():
+        Reset the Brain's attributes for training
+    get_state():
+        Get the state of the environment for the neural network to analyze
+    step():
+        Step function for the agent to move and receive feedback
+    '''
+    def __init__(self, snake, food):
+        self.snake = snake
+        self.food = food
+        self.score = 0
+    
+    def reset(self):
+        self.score = 0
+        self.snake.reset()
+        self.food.position = self.food.random_position(self.snake)
+    
+    def get_state(self):
+        '''
+        Get the state of the environment for the neural network to analyze
+        
+        Current inputs (5):
+            x- and y-coordinates of the Snake's head
+            distance from head to food
+            length of the snake
+        
+        Returns
+        -------
+        np.array:
+            state vector
+        '''
+        head = self.snake.body[0]
+        food_dx = self.food.position[0] - head[0]
+        food_dy = self.food.position[1] - head[1]
+        score = self.score
+        
+        return np.array([
+            head[0], head[1], food_dx, food_dy, score
+        ], dtype=np.float32)
+        
+    def step(self, action):
+        '''
+        Step function for the agent to move and receive feedback
+        
+        Implements reward shaping
+        
+        Parameters
+        ----------
+        action: tuple
+            Tuple indicating the direction to move
+            
+        Returns
+        -------
+        np.array:
+            Environment state for that step
+        float:
+            Reward value for that step
+        boolean:
+            Flag for checking when the training iteration is complete
+        '''
+        self.snake.change_direction(action)
+        self.snake.move()
+        
+        reward = -0.01 # initiale penalty for each step taken
+        done = self.snake.collides_with_self() or self.snake.collides_with_wall()
+        
+        if done:
+            reward -= 10 # penalty for losing
+        else:
+            if self.snake.body[0] == self.food.position:
+                self.food.position = self.food.random_position(self.snake)
+                self.snake.grow()
+                reward += 10 # reward for reaching the food
+                self.score += 1
+        
+        return self.get_state(), reward, done
+        
 ##############################
 #        UI Functions        #
 ##############################
@@ -227,18 +330,35 @@ def render_text(text, font, color, surface, x, y):
 def menu_screen():
     '''
     Render the Menu screen
+    
+    Returns number indicating game mode
+    - 0: Menu
+    - 1: Play
+    - 2: Train
+    - 3: Watch
+    
+    Returns
+    -------
+    int:
+        Mode for game state loop
     '''
     curr_speed = DEFAULT_SPEED
     while True:
         screen.fill(BLACK)
         render_text("Snake Game", font, GREEN, screen, WIDTH // 2, 150)
-        render_text("Play", small_font, WHITE, screen, WIDTH // 2, 250)
+        render_text("Play", small_font, WHITE, screen, WIDTH // 4, 350)
+        render_text("Train", small_font, WHITE, screen, WIDTH // 2, 350)
+        render_text("Watch", small_font, WHITE, screen, WIDTH // 4 + WIDTH // 2, 350)
 
         mx, my = pygame.mouse.get_pos()
         click = pygame.mouse.get_pressed()[0]
 
-        if click and 220 < mx < 380 and 240 < my < 270:
-            return
+        if click and 100 < mx < 200 and 300 < my < 400: # Play button
+            return 1
+        elif click and 250 < mx < 350 and 300 < my < 400: # Train button
+            return 2
+        #elif click and 400 < mx < 500 and 300 < my < 400: # Watch button
+        #    return 3
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -278,10 +398,26 @@ def game_over_screen(score):
         clock.tick(curr_speed)
 
 ##############################
-#          Game Loop         #
+#             DQN            #
 ##############################
 
-def game_loop():
+class DQN(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size)
+        )
+    
+    def forward(self, x):
+        return self.net(x)
+
+##############################
+#          Game Loops        #
+##############################
+
+def player_loop():
     '''
     Official player game loop
     
@@ -308,7 +444,7 @@ def game_loop():
                 sys.exit()
             elif event.type == pygame.KEYDOWN and event.key in directions:
                 snake.change_direction(directions[event.key])
-            elif event.type == pygame.KEYDOWN and 48 < event.key < 59:
+            elif event.type == pygame.KEYDOWN and 48 < event.key < 58:
                 curr_speed = (event.key - 48) * 10
 
         snake.move()
@@ -328,11 +464,104 @@ def game_loop():
         pygame.display.flip()
         clock.tick(curr_speed)
 
+def train_loop():
+    snake = Snake()
+    food = Food(snake)
+    brain = Brain(snake, food)
+    curr_speed = DEFAULT_SPEED
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = DQN(input_size=5, hidden_size=128, output_size=4).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.0003)
+    criterion = nn.MSELoss()
+    memory = deque(maxlen=5000)
+    batch_size = 64
+    gamma = 0.98
+    epsilon = 1.0
+    epsilon_min = 0.05
+    epsilon_decay = 0.995
+    
+    directions = (
+        (0, -1),    # Up
+        (0, 1),     # Down
+        (-1, 0),    # Left
+        (1, 0),     # Right
+    )
+    
+    for iteration in range(1000):
+        start_time = time.time()
+        state = brain.get_state()
+        brain.reset()
+        total_reward = 0
+        done = False
+        t = 0
+        while not done:
+            screen.fill(BLACK)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                elif event.type == pygame.KEYDOWN and 48 < event.key < 58:
+                    curr_speed = (event.key - 48) * 10
+            
+            render_text(f"Score: {brain.score}", small_font, WHITE, screen, 60, 20)
+            
+            snake.render(screen)
+            food.render(screen)
+            pygame.display.flip()
+            clock.tick(curr_speed)
+            
+            if random.random() < epsilon:
+                action = random.randint(0, 3)
+            else:
+                with torch.no_grad():
+                    s = torch.tensor(state, dtype=torch.float32).to(device)
+                    action = torch.argmax(model(s)).item()
+                    
+            next_state, reward, done = brain.step(directions[action])
+            memory.append((state, action, reward, next_state, done))
+            state = next_state
+            total_reward += reward
+            
+            if not done:
+                if t % 5 == 0 and len(memory) >= batch_size:
+                    batch = random.sample(memory, batch_size)
+                    states, actions, rewards, next_states, dones = zip(*batch)
+                    states = torch.tensor(np.array(states), dtype=torch.float32).to(device)
+                    actions = torch.tensor(actions).to(device)
+                    rewards = torch.tensor(rewards).to(device)
+                    next_states = torch.tensor(np.array(next_states), dtype=torch.float32).to(device)
+                    dones = torch.tensor(dones, dtype=torch.bool).to(device)
+                    
+                    q_vals = model(states).gather(1, actions.unsqueeze(1)).squeeze()
+                    max_next_q_vals = model(next_states).max(1)[0]
+                    target_q_vals = rewards + gamma * max_next_q_vals * (~dones)
+                    
+                    loss = criterion(q_vals, target_q_vals.detach())
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+            t += 1
+            
+        epsilon = max(epsilon * epsilon_decay, epsilon_min)
+        elapsed_time = time.time() - start_time
+        print(f"Iteration: {iteration} - Score: {brain.score} - Epsilon: {epsilon:.2f} - Time: {elapsed_time:.2f}s")
+    
+    file = "'snake.pth'"
+    torch.save(model.state_dict(), file)
+    print(f"Model saved as {file}")
+    
 def main():
+    mode = 0
     while True:
-        menu_screen()
-        score = game_loop()
-        game_over_screen(score)
+        if mode == 0:
+            mode = menu_screen()
+        elif mode == 1:
+            score = player_loop()
+            game_over_screen(score)
+        elif mode == 2:
+            train_loop()
+        
 
 if __name__ == "__main__":
     main()
