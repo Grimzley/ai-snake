@@ -7,6 +7,9 @@ Michael Grimsley
 
 Snake AI:
     Recreated the Snake game using the pygame library
+    Developed a Deep Q-Learning agent to play Snake autonomously
+    Implemented a neural network with Pytorch
+    Tuned hyperparameter and included reward shaping to accelerate training
     
 Wishlist:
     Fix bug where player can move in the opposite direction and lose by changing directions too fast
@@ -357,8 +360,8 @@ def menu_screen():
             return 1
         elif click and 250 < mx < 350 and 300 < my < 400: # Train button
             return 2
-        #elif click and 400 < mx < 500 and 300 < my < 400: # Watch button
-        #    return 3
+        elif click and 400 < mx < 500 and 300 < my < 400: # Watch button
+            return 3
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -464,7 +467,7 @@ def player_loop():
         pygame.display.flip()
         clock.tick(curr_speed)
 
-def train_loop():
+def train_loop(file):
     snake = Snake()
     food = Food(snake)
     brain = Brain(snake, food)
@@ -547,12 +550,57 @@ def train_loop():
         elapsed_time = time.time() - start_time
         print(f"Iteration: {iteration} - Score: {brain.score} - Epsilon: {epsilon:.2f} - Time: {elapsed_time:.2f}s")
     
-    file = "'snake.pth'"
     torch.save(model.state_dict(), file)
     print(f"Model saved as {file}")
+
+def watch_loop(file):
+    snake = Snake()
+    food = Food(snake)
+    brain = Brain(snake, food)
+    curr_speed = DEFAULT_SPEED
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = DQN(input_size=5, hidden_size=128, output_size=4).to(device)
+    model.load_state_dict(torch.load(file, map_location=device))
+    model.eval()
+    
+    directions = (
+        (0, -1),    # Up
+        (0, 1),     # Down
+        (-1, 0),    # Left
+        (1, 0),     # Right
+    )
+    
+    while True:
+        state = brain.get_state()
+        brain.reset()
+        done = False
+        while not done:
+            screen.fill(BLACK)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                elif event.type == pygame.KEYDOWN and 48 < event.key < 58:
+                    curr_speed = (event.key - 48) * 10
+            
+            render_text(f"Score: {brain.score}", small_font, WHITE, screen, 60, 20)
+            
+            snake.render(screen)
+            food.render(screen)
+            pygame.display.flip()
+            clock.tick(curr_speed)
+            
+            with torch.no_grad():
+                s = torch.tensor(state, dtype=torch.float32).to(device)
+                q_values = model(s).cpu().numpy()
+                action = np.argmax(q_values)
+                
+            state, _, done = brain.step(directions[action])
+        
 def main():
     mode = 0
+    file = "'snake.pth'"
     while True:
         if mode == 0:
             mode = menu_screen()
@@ -560,8 +608,9 @@ def main():
             score = player_loop()
             game_over_screen(score)
         elif mode == 2:
-            train_loop()
-        
+            train_loop(file)
+        elif mode == 3:
+            watch_loop(file)
 
 if __name__ == "__main__":
     main()
