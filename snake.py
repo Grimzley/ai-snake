@@ -66,7 +66,7 @@ class Snake:
     Methods
     -------
     reset():
-        Reset the Snake's attributes for training
+        Reset the Snake's attributes
     move():
         Move the Snake in its current direction
     grow():
@@ -89,6 +89,9 @@ class Snake:
         self.reset()
     
     def reset(self):
+        '''
+        Reset the Snake's attributes
+        '''
         self.body = [(4 - i, 4) for i in range(3)]
         self.direction = (1, 0)
         self.grow_pending = False
@@ -123,37 +126,58 @@ class Snake:
         Change the direction the Snake is moving
 
         The Snake's direction will not change if it attempts to go in the opposite direction
+        
+        Parameters
+        ----------
+        new_dir: tuple
+            Tuple indicating the direction to change to if possible
         '''
         opposite = (-self.direction[0], -self.direction[1])
         if new_dir != opposite:
             self.direction = new_dir
 
-    def collides_with_self(self):
+    def collides_with_self(self, point):
         '''
-        Check if the Snake collides with itself
-
+        Check if the point collides with itself
+        
+        Parameters
+        ----------
+        point: Tuple
+            Point to analyze
+        
         Returns
         -------
         boolean:
             True if the Snake's head is in its body
         '''
-        return self.body[0] in self.body[1:]
+        x, y = point
+        return (x, y) in self.body[1:]
     
-    def collides_with_wall(self):
+    def collides_with_wall(self, point):
         '''
-        Check if the Snake collides with a wall
-
+        Check if the point collides with a wall
+        
+        Parameters
+        ----------
+        point: Tuple
+            Point to analyze
+        
         Returns
         -------
         boolean:
             True if the Snake goes out of bounds
         '''
-        x, y = self.body[0]
+        x, y = point
         return x < 0 or x >= WIDTH // GRID_SIZE or y < 0 or y >= HEIGHT // GRID_SIZE
 
     def render(self, surface):
         '''
         Render the Snake on the screen
+        
+        Parameters
+        ----------
+        surface: pygame display
+            Screen for the Snake to be rendered on
         '''
         for segment in self.body:
             rect = pygame.Rect(segment[0] * GRID_SIZE, segment[1] * GRID_SIZE, GRID_SIZE, GRID_SIZE)
@@ -209,6 +233,11 @@ class Food:
     def render(self, surface):
         '''
         Render the Food on the screen
+        
+        Parameters
+        ----------
+        surface: pygame display
+            Screen for the Food to be rendered on
         '''
         rect = pygame.Rect(self.position[0] * GRID_SIZE, self.position[1] * GRID_SIZE, GRID_SIZE, GRID_SIZE)
         pygame.draw.rect(surface, RED, rect)
@@ -223,11 +252,19 @@ class Brain:
         Snake object for the agent to control
     food: Food
         Food object for the Snake to find
+    score: int
+        Counter for game score
+    steps_since_last_food:
+        Counter for steps taken since last Food was reached
+    last_positions: deque
+        Queue containing the most recent head positions
     
     Methods
     -------
     reset():
         Reset the Brain's attributes for training
+    count_safe_cells:
+        Count the number of safe cells around a given point
     get_state():
         Get the state of the environment for the neural network to analyze
     step():
@@ -236,34 +273,116 @@ class Brain:
     def __init__(self, snake, food):
         self.snake = snake
         self.food = food
-        self.score = 0
+        self.reset()
     
     def reset(self):
+        '''
+        Reset the Brain's attributes
+        '''
         self.score = 0
         self.snake.reset()
         self.food.position = self.food.random_position(self.snake)
+        
+        self.steps_since_last_food = 0
+        self.last_positions = deque(maxlen=50)
+        
+    def count_safe_cells(self, point):
+        '''
+        Count the number of safe cells around a given point
+        
+        Breadth-first search traversal 
+        
+        Parameters
+        ----------
+        point: Tuple
+            The point to analyze
+            
+        Returns
+        -------
+        int:
+            The number of safe cells around the point
+        '''
+        visited = set()
+        queue = [point]
+        count = 0
+        for _ in range(30):
+            if not queue:
+                break
+            x, y = queue.pop()
+            for dx, dy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
+                nx = x + dx
+                ny = y + dy
+                np = (nx, ny)
+                if 0 <= nx < WIDTH // GRID_SIZE and 0 <= ny < HEIGHT // GRID_SIZE:
+                    if np not in self.snake.body and np not in visited:
+                        visited.add(np)
+                        queue.append(np)
+                        count += 1
+        return count
     
     def get_state(self):
         '''
         Get the state of the environment for the neural network to analyze
         
-        Current inputs (5):
-            x- and y-coordinates of the Snake's head
-            distance from head to food
-            length of the snake
+        Current inputs (18):
+            Danger in each direction (4)
+            Current move directions (4)
+            Distance from Food (2)
+            Food directions (4)
+            Distance from tail (2)
+            Number of safe cells ahead (1)
+            Length of the snake (score) (1)
         
         Returns
         -------
         np.array:
-            state vector
+            state vector for the neural network
         '''
         head = self.snake.body[0]
+        tail = self.snake.body[-1]
+        
+        point_u = (head[0], head[1] - 1)
+        point_d = (head[0], head[1] + 1)
+        point_l = (head[0] - 1, head[1])
+        point_r = (head[0] + 1, head[1])
+        
+        # Danger directions
+        danger_up = int(self.snake.collides_with_self(point_u) or self.snake.collides_with_wall(point_u))
+        danger_down = int(self.snake.collides_with_self(point_d) or self.snake.collides_with_wall(point_d))
+        danger_left = int(self.snake.collides_with_self(point_l) or self.snake.collides_with_wall(point_l))
+        danger_right = int(self.snake.collides_with_self(point_r) or self.snake.collides_with_wall(point_r))
+        
+        # One-hot move directions
+        dir_up = int(self.snake.direction == (0, -1))
+        dir_down = int(self.snake.direction == (0, 1))
+        dir_left = int(self.snake.direction == (-1, 0))
+        dir_right = int(self.snake.direction == (1, 0))
+        
+        # Distance from Food
         food_dx = self.food.position[0] - head[0]
         food_dy = self.food.position[1] - head[1]
+        
+        # One-hot Food directions
+        food_up = int(food_dy < 0)
+        food_down = int(food_dy > 0)
+        food_left = int(food_dx < 0)
+        food_right = int(food_dx > 0)
+        
+        # Distance from Tail
+        tail_dx = tail[0] - head[0]
+        tail_dy = tail[1] - head[1]
+        
+        open_space = self.count_safe_cells(np.add(head, self.snake.direction))
+        
         score = self.score
         
         return np.array([
-            head[0], head[1], food_dx, food_dy, score
+            danger_up, danger_down, danger_left, danger_right,
+            dir_up, dir_down, dir_left, dir_right,
+            food_dx, food_dy, food_up, food_down, food_left, food_right,
+            tail_dx, tail_dy,
+            open_space,
+            score
         ], dtype=np.float32)
         
     def step(self, action):
@@ -286,20 +405,49 @@ class Brain:
         boolean:
             Flag for checking when the training iteration is complete
         '''
+        curr_head = self.snake.body[0]
         self.snake.change_direction(action)
         self.snake.move()
+        new_head = self.snake.body[0]
+        food = self.food.position
         
-        reward = -0.01 # initiale penalty for each step taken
-        done = self.snake.collides_with_self() or self.snake.collides_with_wall()
+        # Reward Shaping
+        reward = -0.01 # penalty for each step taken
         
+        # Manhattan distance
+        old_dist = abs(food[0] - curr_head[0]) + abs(food[1] - curr_head[1])
+        new_dist = abs(food[0] - new_head[0]) + abs(food[1] - new_head[1])
+        # Incentive to move closer to the Food
+        if new_dist < old_dist:
+            reward += 0.03
+        elif new_dist > old_dist:
+            reward -= 0.01
+        
+        done = self.snake.collides_with_self(new_head) or self.snake.collides_with_wall(new_head)
         if done:
-            reward -= 10 # penalty for losing
+            reward -= 15 # penalty for losing
         else:
-            if self.snake.body[0] == self.food.position:
+            if new_head == food:
                 self.food.position = self.food.random_position(self.snake)
                 self.snake.grow()
-                reward += 10 # reward for reaching the food
+                reward += 15 # reward for reaching the Food
                 self.score += 1
+                self.steps_since_last_food = 0
+            else:
+                self.steps_since_last_food += 1
+        
+        if self.steps_since_last_food > 100: # penalty for taking too long to reach Food
+            reward -= 1
+        if self.steps_since_last_food > GRID_SIZE * GRID_SIZE: # loop fail safe
+            done = True
+        
+        self.last_positions.append(new_head)
+        if len(set(self.last_positions)) < len(self.snake.body) * 1.5: # penalty for looping
+            reward -= 0.5
+        
+        # Incentive to leave open space to prevent trapping
+        open_space = self.count_safe_cells(np.add(new_head, self.snake.direction))
+        reward += min(open_space * 0.002, 0.2)
         
         return self.get_state(), reward, done
         
@@ -457,7 +605,7 @@ def player_loop():
             food = Food(snake)
             score += 1
 
-        if snake.collides_with_self() or snake.collides_with_wall():
+        if snake.collides_with_self(snake.body[0]) or snake.collides_with_wall(snake.body[0]):
             return score
 
         render_text(f"Score: {score}", small_font, WHITE, screen, 60, 20)
@@ -474,12 +622,14 @@ def train_loop(file):
     curr_speed = DEFAULT_SPEED
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DQN(input_size=5, hidden_size=128, output_size=4).to(device)
+    model = DQN(input_size=18, hidden_size=128, output_size=4).to(device)
+    # Learning rate controls how much the model should change with each training step
     optimizer = optim.Adam(model.parameters(), lr=0.0003)
     criterion = nn.MSELoss()
     memory = deque(maxlen=5000)
-    batch_size = 64
-    gamma = 0.98
+    batch_size = 64 # How much experience is used per training update
+    gamma = 0.98 # Determines how much the agent values future vs immediate rewards
+    # Probability the agent will take a random action instead of the best-known action
     epsilon = 1.0
     epsilon_min = 0.05
     epsilon_decay = 0.995
@@ -548,7 +698,7 @@ def train_loop(file):
             
         epsilon = max(epsilon * epsilon_decay, epsilon_min)
         elapsed_time = time.time() - start_time
-        print(f"Iteration: {iteration} - Score: {brain.score} - Epsilon: {epsilon:.2f} - Time: {elapsed_time:.2f}s")
+        print(f"Iteration: {iteration} - Score/Reward: {brain.score}/{total_reward:.2f} - Epsilon: {epsilon:.2f} - Time: {elapsed_time:.2f}s")
     
     torch.save(model.state_dict(), file)
     print(f"Model saved as {file}")
@@ -560,7 +710,7 @@ def watch_loop(file):
     curr_speed = DEFAULT_SPEED
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DQN(input_size=5, hidden_size=128, output_size=4).to(device)
+    model = DQN(input_size=18, hidden_size=128, output_size=4).to(device)
     model.load_state_dict(torch.load(file, map_location=device))
     model.eval()
     
