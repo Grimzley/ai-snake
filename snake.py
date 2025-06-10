@@ -3,10 +3,10 @@
 snake.py
 
 Michael Grimsley
-6/8/2025
+6/9/2025
 
 Snake AI:
-    Recreated the Snake game using the pygame library
+    Recreated the Snake game using the Pygame library
     Developed a Deep Q-Learning agent to play Snake autonomously
     Implemented a neural network with Pytorch
     Tuned hyperparameter and included reward shaping to accelerate training
@@ -92,7 +92,7 @@ class Snake:
         '''
         Reset the Snake's attributes
         '''
-        self.body = [(4 - i, 4) for i in range(3)]
+        self.body = [(5 - i, 5) for i in range(3)]
         self.direction = (1, 0)
         self.grow_pending = False
     
@@ -131,10 +131,17 @@ class Snake:
         ----------
         new_dir: tuple
             Tuple indicating the direction to change to if possible
+            
+        Returns
+        -------
+        boolean:
+            True if the direction was successfully changed
         '''
         opposite = (-self.direction[0], -self.direction[1])
-        if new_dir != opposite:
+        success = new_dir != opposite
+        if success:
             self.direction = new_dir
+        return success
 
     def collides_with_self(self, point):
         '''
@@ -263,8 +270,10 @@ class Brain:
     -------
     reset():
         Reset the Brain's attributes for training
-    count_safe_cells:
+    count_safe_cells():
         Count the number of safe cells around a given point
+    count_spaces_until_collision():
+        Count the number of safe spaces in a given directions
     get_state():
         Get the state of the environment for the neural network to analyze
     step():
@@ -305,7 +314,7 @@ class Brain:
         visited = set()
         queue = [point]
         count = 0
-        for _ in range(30):
+        for _ in range(20):
             if not queue:
                 break
             x, y = queue.pop()
@@ -320,17 +329,51 @@ class Brain:
                         count += 1
         return count
     
+    def count_spaces_until_collision(self, point, direction):
+        '''
+        Count the number of safe spaces in a given directions
+        
+        Parameters
+        ----------
+        point: Tuple
+            Position to analyze
+        direction: Tuple
+            Check to check
+            
+        Returns
+        -------
+        int:
+            Number of safe spaces from point in direction
+        '''
+        count = 0
+        
+        p = np.add(point, direction)
+        x, y = p
+ 
+        while 0 <= x < WIDTH // GRID_SIZE and 0 <= y < HEIGHT // GRID_SIZE:
+            if (x, y) not in self.snake.body:
+                count += 1
+                p = np.add(p, direction)
+                x, y = p
+            else:
+                break
+        
+        return count
+    
     def get_state(self):
         '''
         Get the state of the environment for the neural network to analyze
         
-        Current inputs (18):
+        Current inputs (13):
             Danger in each direction (4)
             Current move directions (4)
+            Valid directions (4)
             Distance from Food (2)
             Food directions (4)
             Distance from tail (2)
-            Number of safe cells ahead (1)
+            Tail directions (4)
+            Number of safe cells in each direction (4)
+            Number of safe spaces in each direction (4)
             Length of the snake (score) (1)
         
         Returns
@@ -358,6 +401,12 @@ class Brain:
         dir_left = int(self.snake.direction == (-1, 0))
         dir_right = int(self.snake.direction == (1, 0))
         
+        # Valid directions
+        valid_up = int(not dir_up)
+        valid_down = int(not dir_down)
+        valid_left = int(not dir_left)
+        valid_right = int(not dir_right)
+        
         # Distance from Food
         food_dx = self.food.position[0] - head[0]
         food_dy = self.food.position[1] - head[1]
@@ -367,21 +416,41 @@ class Brain:
         food_down = int(food_dy > 0)
         food_left = int(food_dx < 0)
         food_right = int(food_dx > 0)
-        
+        '''
         # Distance from Tail
         tail_dx = tail[0] - head[0]
         tail_dy = tail[1] - head[1]
         
-        open_space = self.count_safe_cells(np.add(head, self.snake.direction))
+        # One-hot Tail directions
+        tail_up = int(tail_dy < 0)
+        tail_down = int(tail_dy > 0)
+        tail_left = int(tail_dx < 0)
+        tail_right = int(tail_dx > 0)
         
+        # Number of safe cells ahead
+        open_space_up = self.count_safe_cells(np.add(head, (0, -1)))
+        open_space_down = self.count_safe_cells(np.add(head, (0, 1)))
+        open_space_left = self.count_safe_cells(np.add(head, (-1, 0)))
+        open_space_right = self.count_safe_cells(np.add(head, (1, 0)))
+        
+        # Number of safe spaces in each direction
+        safe_up = self.count_spaces_until_collision(head, (0, -1))
+        safe_down = self.count_spaces_until_collision(head, (0, 1))
+        safe_left = self.count_spaces_until_collision(head, (-1, 0))
+        safe_right = self.count_spaces_until_collision(head, (1, 0))
+        '''
+        # Score
         score = self.score
         
         return np.array([
             danger_up, danger_down, danger_left, danger_right,
             dir_up, dir_down, dir_left, dir_right,
-            food_dx, food_dy, food_up, food_down, food_left, food_right,
-            tail_dx, tail_dy,
-            open_space,
+            #valid_up, valid_down, valid_left, valid_right
+            #food_dx, food_dy,
+            food_up, food_down, food_left, food_right,
+            #tail_dx, tail_dy, tail_up, tail_down, tail_left, tail_right,
+            #open_space_up, open_space_down, open_space_left, open_space_right,
+            #safe_up, safe_down, safe_left, safe_right,
             score
         ], dtype=np.float32)
         
@@ -406,7 +475,7 @@ class Brain:
             Flag for checking when the training iteration is complete
         '''
         curr_head = self.snake.body[0]
-        self.snake.change_direction(action)
+        success = self.snake.change_direction(action)
         self.snake.move()
         new_head = self.snake.body[0]
         food = self.food.position
@@ -414,40 +483,42 @@ class Brain:
         # Reward Shaping
         reward = -0.01 # penalty for each step taken
         
+        if not success: # penalty for attempting to move in the oppopsite direction
+            reward -= 1
+        
         # Manhattan distance
-        old_dist = abs(food[0] - curr_head[0]) + abs(food[1] - curr_head[1])
-        new_dist = abs(food[0] - new_head[0]) + abs(food[1] - new_head[1])
+        #old_dist = abs(food[0] - curr_head[0]) + abs(food[1] - curr_head[1])
+        #new_dist = abs(food[0] - new_head[0]) + abs(food[1] - new_head[1])
         # Incentive to move closer to the Food
-        if new_dist < old_dist:
-            reward += 0.03
-        elif new_dist > old_dist:
-            reward -= 0.01
+        #if new_dist < old_dist:
+        #    reward += 0.02
+        #elif new_dist > old_dist:
+        #    reward -= 0.01
         
         done = self.snake.collides_with_self(new_head) or self.snake.collides_with_wall(new_head)
         if done:
-            reward -= 15 # penalty for losing
+            reward -= 10 # penalty for losing
         else:
             if new_head == food:
                 self.food.position = self.food.random_position(self.snake)
                 self.snake.grow()
-                reward += 15 # reward for reaching the Food
+                reward += 10 # reward for reaching the Food
                 self.score += 1
                 self.steps_since_last_food = 0
             else:
                 self.steps_since_last_food += 1
         
-        if self.steps_since_last_food > 100: # penalty for taking too long to reach Food
-            reward -= 1
-        if self.steps_since_last_food > GRID_SIZE * GRID_SIZE: # loop fail safe
-            done = True
-        
         self.last_positions.append(new_head)
-        if len(set(self.last_positions)) < len(self.snake.body) * 1.5: # penalty for looping
+        if len(set(self.last_positions)) < len(self.snake.body) * 1.5: # penalty for repeating moves
             reward -= 0.5
         
         # Incentive to leave open space to prevent trapping
-        open_space = self.count_safe_cells(np.add(new_head, self.snake.direction))
-        reward += min(open_space * 0.002, 0.2)
+        #open_space = self.count_safe_cells(np.add(new_head, self.snake.direction))
+        #reward += min(open_space * 0.002, 0.2)
+        
+        if self.steps_since_last_food > 100: # penalty for taking too long to reach Food
+            reward -= 1
+            done = True # repetition fail safe
         
         return self.get_state(), reward, done
         
@@ -564,6 +635,20 @@ class DQN(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+def save_checkpoint(model, optimizer, epsilon, filename="checkpoint.pth"):
+    '''
+    Save the model for future retraining
+    '''
+    checkpoint = {
+        'model_state': model.state_dict(),
+        'optimizer_state': optimizer.state_dict(),
+        'epsilon': epsilon
+    }
+    torch.save(model.state_dict(), "snake_dqn.pth"
+    print(f"Model saved to snake_dqn.pth")
+    torch.save(checkpoint, filename)
+    print(f"Saved checkpoint to {filename}")
+
 ##############################
 #          Game Loops        #
 ##############################
@@ -615,14 +700,14 @@ def player_loop():
         pygame.display.flip()
         clock.tick(curr_speed)
 
-def train_loop(file):
+def train_loop():
     snake = Snake()
     food = Food(snake)
     brain = Brain(snake, food)
     curr_speed = DEFAULT_SPEED
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DQN(input_size=18, hidden_size=128, output_size=4).to(device)
+    model = DQN(input_size=13, hidden_size=128, output_size=4).to(device)
     # Learning rate controls how much the model should change with each training step
     optimizer = optim.Adam(model.parameters(), lr=0.0003)
     criterion = nn.MSELoss()
@@ -700,8 +785,7 @@ def train_loop(file):
         elapsed_time = time.time() - start_time
         print(f"Iteration: {iteration} - Score/Reward: {brain.score}/{total_reward:.2f} - Epsilon: {epsilon:.2f} - Time: {elapsed_time:.2f}s")
     
-    torch.save(model.state_dict(), file)
-    print(f"Model saved as {file}")
+    save_checkpoint(model, optimizer, epsilon)
 
 def watch_loop(file):
     snake = Snake()
@@ -710,7 +794,7 @@ def watch_loop(file):
     curr_speed = DEFAULT_SPEED
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DQN(input_size=18, hidden_size=128, output_size=4).to(device)
+    model = DQN(input_size=13, hidden_size=128, output_size=4).to(device)
     model.load_state_dict(torch.load(file, map_location=device))
     model.eval()
     
@@ -750,7 +834,7 @@ def watch_loop(file):
         
 def main():
     mode = 0
-    file = "'snake.pth'"
+    file = "snake.pth"
     while True:
         if mode == 0:
             mode = menu_screen()
@@ -758,7 +842,7 @@ def main():
             score = player_loop()
             game_over_screen(score)
         elif mode == 2:
-            train_loop(file)
+            train_loop()
         elif mode == 3:
             watch_loop(file)
 
