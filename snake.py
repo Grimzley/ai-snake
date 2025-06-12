@@ -474,7 +474,7 @@ class Brain:
             food_up, food_down, food_left, food_right,
             #tail_dx, tail_dy, tail_up, tail_down, tail_left, tail_right,
             #open_space_up, open_space_down, open_space_left, open_space_right,
-            safe_up, safe_down, safe_left, safe_right,
+            #safe_up, safe_down, safe_left, safe_right,
             score
         ], dtype=np.float32)
         
@@ -694,9 +694,9 @@ def save_checkpoint(model, optimizer, epsilon, filename="checkpoint.pth"):
         'optimizer_state': optimizer.state_dict(),
         'epsilon': epsilon
     }
-    torch.save(checkpoint, f"models/{filename}")
-    print(f"Saved checkpoint to models/{filename}")
-  
+    torch.save(checkpoint, f"{filename}")
+    print(f"Saved checkpoint to {filename}")
+
 ##############################
 #          Game Loops        #
 ##############################
@@ -754,32 +754,27 @@ def train_loop():
     curr_speed = DEFAULT_SPEED
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = DQN(input_size=nn_size).to(device)
+    # Learning rate controls how much the model should change with each training step
+    optimizer = optim.Adam(model.parameters(), lr=0.0003)
+    # Probability the agent will take a random action instead of the best-known action
+    epsilon = 1.0
     if not file:
         print("Generating new model ...")
-        model = DQN(input_size=nn_size).to(device)
-        # Learning rate controls how much the model should change with each training step
-        optimizer = optim.Adam(model.parameters(), lr=0.0003)
-        # Probability the agent will take a random action instead of the best-known action
-        epsilon = 1.0
     else:
         print("Getting previous model ...")
         checkpoint = torch.load(file)
+        
         pretrained_dict = checkpoint['model_state']
-        
-        model = DQN(input_size=nn_size)
         model_dict = model.state_dict()
-        
         matched_state = {
-            k: v for k, v in checkpoint.items()
-            if k in model_dict and v.shape == new_state[k].shape
+            k: v for k, v in pretrained_dict.items()
+            if k in model_dict and v.shape == model_dict[k].shape
         }
-        
         model_dict.update(matched_state)
         model.load_state_dict(model_dict)
-        
         print("Successfully loaded weights")
-        
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.0003)
+
         # Comment out if changing NN inputs or hyperparameters
         #optimizer.load_state_dict(checkpoint['optimizer_state'])
         
