@@ -9,7 +9,7 @@ Snake AI:
     Recreated the Snake game using the Pygame library
     Developed a Deep Q-Learning agent to play Snake autonomously
     Implemented a neural network with Pytorch
-    Tuned hyperparameter and included reward shaping to accelerate training
+    Tuned hyperparameters and included reward shaping to accelerate training
     Saves the model for watching and further training
     
 Wishlist:
@@ -388,7 +388,7 @@ class Brain:
         '''
         Get the state of the environment for the neural network to analyze
         
-        Current inputs (13):
+        Current inputs:
             Danger in each direction (4)
             Current move directions (4)
             Valid directions (4)
@@ -472,7 +472,8 @@ class Brain:
             #valid_up, valid_down, valid_left, valid_right,
             #food_dx, food_dy,
             food_up, food_down, food_left, food_right,
-            #tail_dx, tail_dy, tail_up, tail_down, tail_left, tail_right,
+            #tail_dx, tail_dy,
+            #tail_up, tail_down, tail_left, tail_right,
             #open_space_up, open_space_down, open_space_left, open_space_right,
             #safe_up, safe_down, safe_left, safe_right,
             score
@@ -540,7 +541,7 @@ class Brain:
         #open_space = self.count_safe_cells(np.add(new_head, self.snake.direction))
         #reward += min(open_space * 0.002, 0.2)
         
-        if self.steps_since_last_food > 200: # penalty for taking too long to reach Food
+        if self.steps_since_last_food > 300: # penalty for taking too long to reach Food
             reward -= 1
             done = True # repetition fail safe
         
